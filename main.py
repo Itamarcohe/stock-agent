@@ -1,16 +1,82 @@
-# This is a sample Python script.
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from apscheduler.schedulers.background import BackgroundScheduler
+from app.database import create_db
+from app.agents.price_agent import fetch_prices
+from app.agents.news_agent import fetch_news
+from app.agents.quality_agent import analyze_quality
+from app.models import StockPrice, NewsItem
+from sqlmodel import Session, select
+from app.database import engine
 
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+app = FastAPI(title="Stock Agent")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+scheduler = BackgroundScheduler()
 
 
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press Ctrl+F8 to toggle the breakpoint.
+@app.on_event("startup")
+def startup():
+    create_db()
+    fetch_prices()
+    fetch_news()
+    scheduler.add_job(fetch_prices, "interval", minutes=5)
+    scheduler.add_job(fetch_news, "interval", minutes=10)
+    scheduler.start()
+    print("[Server] Scheduler started")
 
 
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    print_hi('PyCharm')
+@app.on_event("shutdown")
+def shutdown():
+    scheduler.shutdown()
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+
+@app.get("/prices")
+def get_prices():
+    with Session(engine) as session:
+        prices = session.exec(
+            select(StockPrice)
+            .order_by(StockPrice.timestamp.desc())
+            .limit(200)
+        ).all()
+    return prices
+
+
+@app.get("/prices/{symbol}")
+def get_price_by_symbol(symbol: str):
+    with Session(engine) as session:
+        prices = session.exec(
+            select(StockPrice)
+            .where(StockPrice.symbol == symbol.upper())
+            .order_by(StockPrice.timestamp.desc())
+            .limit(20)
+        ).all()
+    return prices
+
+
+@app.get("/news")
+def get_news():
+    with Session(engine) as session:
+        news = session.exec(
+            select(NewsItem)
+            .order_by(NewsItem.timestamp.desc())
+            .limit(50)
+        ).all()
+    return news
+
+
+@app.get("/watchlist")
+def get_watchlist():
+    from app.agents.price_agent import WATCHLIST
+    return {"symbols": WATCHLIST}
+
+
+@app.get("/quality/{symbol}")
+def get_quality(symbol: str):
+    return analyze_quality(symbol.upper())
